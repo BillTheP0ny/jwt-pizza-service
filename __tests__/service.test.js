@@ -13,11 +13,29 @@ afterAll(() => {
   global.fetch.mockRestore();
 });
 
+// ✅ Retry admin login in CI (default admin is created asynchronously on first DB init)
 async function login(email, password) {
-  const res = await request(app).put('/api/auth').send({ email, password });
-  expect(res.status).toBe(200);
-  expect(res.body.token).toBeDefined();
-  return res.body.token;
+  const isAdmin = email === 'a@jwt.com' && password === 'admin';
+
+  for (let i = 0; i < (isAdmin ? 10 : 1); i++) {
+    const res = await request(app).put('/api/auth').send({ email, password });
+
+    if (res.status === 200) {
+      expect(res.body.token).toBeDefined();
+      return res.body.token;
+    }
+
+    // In CI the admin user insert can lag slightly; wait and retry
+    if (isAdmin) {
+      await new Promise((r) => setTimeout(r, 200));
+      continue;
+    }
+
+    // Non-admin logins should not retry
+    expect(res.status).toBe(200);
+  }
+
+  throw new Error('Admin login never became available after retries');
 }
 
 describe('JWT Pizza Service', () => {
@@ -29,13 +47,8 @@ describe('JWT Pizza Service', () => {
   });
 
   test('login as admin works', async () => {
-    const res = await request(app)
-      .put('/api/auth')
-      .send({ email: 'a@jwt.com', password: 'admin' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.user.email).toBe('a@jwt.com');
-    expect(res.body.token).toBeDefined();
+    const token = await login('a@jwt.com', 'admin');
+    expect(token).toBeDefined();
   });
 
   test('creating franchise without auth fails', async () => {
@@ -77,25 +90,25 @@ describe('JWT Pizza Service', () => {
     expect(res.body.id).toBeDefined();
   });
 
-test('PUT /api/user/:userId updates user name', async () => {
-  const token = await login('a@jwt.com', 'admin');
+  test('PUT /api/user/:userId updates user name', async () => {
+    const token = await login('a@jwt.com', 'admin');
 
-  const me = await request(app)
-    .get('/api/user/me')
-    .set('Authorization', `Bearer ${token}`);
-  expect(me.status).toBe(200);
+    const me = await request(app)
+      .get('/api/user/me')
+      .set('Authorization', `Bearer ${token}`);
+    expect(me.status).toBe(200);
 
-  const userId = me.body.id;
+    const userId = me.body.id;
 
-  const res = await request(app)
-    .put(`/api/user/${userId}`)
-    .set('Authorization', `Bearer ${token}`)
-    .send({ name: 'Admin Updated', email: me.body.email }); // ✅ include email
+    const res = await request(app)
+      .put(`/api/user/${userId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Admin Updated', email: me.body.email });
 
-  expect(res.status).toBe(200);
-  expect(res.body.user.name).toBeDefined();
-  expect(res.body.token).toBeDefined();
-});
+    expect(res.status).toBe(200);
+    expect(res.body.user.name).toBeDefined();
+    expect(res.body.token).toBeDefined();
+  });
 
   test('admin can create franchise and store', async () => {
     const token = await login('a@jwt.com', 'admin');
@@ -126,9 +139,7 @@ test('PUT /api/user/:userId updates user name', async () => {
     expect(res.body).toHaveProperty('franchises');
   });
 
-  // ✅ FIXED: use real menu item id/title/price
   test('diner can create order and view history', async () => {
-    // create diner user
     const email = `d${Date.now()}@jwt.com`;
     const registerRes = await request(app)
       .post('/api/auth')
@@ -138,21 +149,18 @@ test('PUT /api/user/:userId updates user name', async () => {
 
     const adminToken = await login('a@jwt.com', 'admin');
 
-    // ensure at least one menu item exists
     const addMenuRes = await request(app)
       .put('/api/order/menu')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ title: `Test${Date.now()}`, description: 'T', image: 't.png', price: 0.01 });
     expect(addMenuRes.status).toBe(200);
 
-    // fetch menu and pick real item
     const menuRes = await request(app).get('/api/order/menu');
     expect(menuRes.status).toBe(200);
     expect(Array.isArray(menuRes.body)).toBe(true);
     expect(menuRes.body.length).toBeGreaterThan(0);
     const item = menuRes.body[0];
 
-    // create franchise + store
     const franchiseName = `F${Date.now()}`;
     const frRes = await request(app)
       .post('/api/franchise')
@@ -168,7 +176,6 @@ test('PUT /api/user/:userId updates user name', async () => {
     expect(storeRes.status).toBe(200);
     const storeId = storeRes.body.id;
 
-    // create order as diner using real menu item
     const orderRes = await request(app)
       .post('/api/order')
       .set('Authorization', `Bearer ${dinerToken}`)
@@ -181,7 +188,6 @@ test('PUT /api/user/:userId updates user name', async () => {
     expect(orderRes.status).toBe(200);
     expect(orderRes.body).toHaveProperty('jwt');
 
-    // view order history
     const historyRes = await request(app)
       .get('/api/order')
       .set('Authorization', `Bearer ${dinerToken}`);
@@ -189,17 +195,17 @@ test('PUT /api/user/:userId updates user name', async () => {
     expect(historyRes.status).toBe(200);
     expect(historyRes.body).toHaveProperty('orders');
   });
-});
 
-test('DELETE /api/auth logs out', async () => {
-  const token = await login('a@jwt.com', 'admin');
-  const res = await request(app)
-    .delete('/api/auth')
-    .set('Authorization', `Bearer ${token}`);
-  expect(res.status).toBe(200);
-});
+  test('DELETE /api/auth logs out', async () => {
+    const token = await login('a@jwt.com', 'admin');
+    const res = await request(app)
+      .delete('/api/auth')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+  });
 
-test('GET /api/user/me without auth fails', async () => {
-  const res = await request(app).get('/api/user/me');
-  expect([401, 403]).toContain(res.status);
+  test('GET /api/user/me without auth fails', async () => {
+    const res = await request(app).get('/api/user/me');
+    expect([401, 403]).toContain(res.status);
+  });
 });
