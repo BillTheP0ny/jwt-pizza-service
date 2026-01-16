@@ -1,8 +1,6 @@
 # 🍕 jwt-pizza-service
 
 ![Coverage badge](https://pizza-factory.cs329.click/api/badge/jparr4/jwtpizzaservicecoverage?t=1)
-![Coverage badge](https://pizza-factory.cs329.click/api/badge/jparr4/jwtpizzaservicecoverage?t=1)
-![Coverage badge](https://pizza-factory.cs329.click/api/badge/jparr4/jwtpizzaservicecoverage)
 
 
 
