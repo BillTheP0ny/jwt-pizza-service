@@ -1,6 +1,6 @@
-const app = require('./service.js');
+const config = require('./config.js');
+const app = require('./app.js');
 
-const port = process.argv[2] || 3000;
-app.listen(port, () => {
-  console.log(`Server started on port ${port}`);
+app.listen(config.port, () => {
+  console.log(`jwt-pizza-service listening on port ${config.port}`);
 });
