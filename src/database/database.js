@@ -199,7 +199,9 @@ class DB {
         await this.query(connection, `DELETE FROM \`user\` WHERE id=?`, [userId]);
 
         await connection.commit();
-      } catch (e) {
+      } catch (err) {
+        // ✅ Use the caught error so ESLint doesn't fail, and log for debugging
+        console.error('deleteUser failed:', err);
         await connection.rollback();
         throw new StatusCodeError('unable to delete user', 500);
       }
