@@ -1,9 +1,7 @@
 **/node_modules
 **/.DS_Store
 .vscode
-config.js
 coverage
 dist
-src/config.js
 coverage
 node_modules
