@@ -1,10 +1,6 @@
-const config = require('./config.js');
-const app = require('./app.js');
+const app = require('./service.js');
 
-app.listen(config.port, () => {
-  console.log(`jwt-pizza-service listening on port ${config.port}`);
-  console.log(`jwt-pizza-service  connecting to db host ${config.db.connection.host}`);
-  console.log(`jwt-pizza-service connecting to pizza factory ${config.factory.url}`);
-
-
+const port = process.argv[2] || 3000;
+app.listen(port, () => {
+  console.log(`Server started on port ${port}`);
 });
