@@ -90,17 +90,13 @@ jobs:
       # ----------------------------
       - name: Create dist
         run: |
-          rm -rf dist
           mkdir dist
           cp Dockerfile dist
           cp -r src/* dist
           cp *.json dist
-
-          # Swap CI DB values into your production DB values for the container
-          # These MUST exist as GitHub Secrets: DB_USERNAME, DB_PASSWORD, DB_HOSTNAME
-          sed -i "s/user: 'root'/user: '${{ secrets.DB_USERNAME }}'/g" dist/config.js
-          sed -i "s/password: 'tempdbpassword'/password: '${{ secrets.DB_PASSWORD }}'/g" dist/config.js
-          sed -i "s/host: '127.0.0.1'/host: '${{ secrets.DB_HOSTNAME }}'/g" dist/config.js
+          sed -i "s/root/${{ secrets.DB_USERNAME }}/g" dist/config.js
+          sed -i "s/tempdbpassword/${{ secrets.DB_PASSWORD }}/g" dist/config.js
+          sed -i "s/127.0.0.1/${{ secrets.DB_HOSTNAME }}/g" dist/config.js
 
       - name: Update distribution artifact
         uses: actions/upload-artifact@v4
@@ -116,7 +112,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
     needs: build
     env:
       version: ${{ needs.build.outputs.version }}
@@ -126,7 +121,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: package
-          path: dist/
 
       - name: Create OIDC token to AWS
         uses: aws-actions/configure-aws-credentials@v4
@@ -146,12 +140,10 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push container image
+        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: jwt-pizza-service
-        run: |
-          echo "Deploying version: $version"
-          docker buildx build --platform=linux/arm64 \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$version \
-            --push dist
+          run: |
+            docker build --platform=linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY --push .
+            echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:latest" >>  $GITHUB_OUTPUT
