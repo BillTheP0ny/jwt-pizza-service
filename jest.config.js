@@ -4,12 +4,12 @@ module.exports = {
   coverageDirectory: 'coverage',
   coverageReporters: ['json-summary', 'text', 'lcov'],
   collectCoverageFrom: [
-    '!src/metrics.js',
     'src/**/*.js',
     '!src/config.js',
     '!src/version.json',
     '!src/index.js',
     '!src/init.js',
+    '!src/metrics.js',
   ],
   coverageThreshold: {
     global: {
