@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config.js');
 const { asyncHandler } = require('../endpointHelper.js');
 const { DB, Role } = require('../database/database.js');
+const metrics = require('../metrics.js');
 
 const authRouter = express.Router();
 
@@ -75,7 +76,14 @@ authRouter.put(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await DB.getUser(email, password);
+
+    if (!user) {
+      metrics.authAttempt(false);
+      return res.status(401).json({ message: 'unauthorized' });
+    }
+
     const auth = await setAuth(user);
+    metrics.authAttempt(true, user.id);
     res.json({ user: user, token: auth });
   })
 );
