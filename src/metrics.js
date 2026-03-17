@@ -145,10 +145,14 @@ async function sendMetricsToGrafana(metrics) {
     ],
   };
 
+  const basicAuth = Buffer.from(
+    `${config.metrics.accountId}:${config.metrics.apiKey}`
+  ).toString('base64');
+
   const response = await fetch(config.metrics.endpointUrl, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.metrics.accountId}:${config.metrics.apiKey}`,
+      Authorization: `Basic ${basicAuth}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
