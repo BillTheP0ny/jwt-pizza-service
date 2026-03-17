@@ -15,4 +15,11 @@ module.exports =  {
    url: 'https://pizza-factory.cs329.click',
    apiKey: '208971a201ae4462b3d5bca3330f3e3c',
    },
+
+metrics: {
+  source: 'jwt-pizza-service-dev',
+  endpointUrl: '',
+  accountId: '',
+  apiKey: '',
+},
 };
