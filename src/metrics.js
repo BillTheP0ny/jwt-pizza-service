@@ -149,6 +149,12 @@ async function sendMetricsToGrafana(metrics) {
     `${config.metrics.accountId}:${config.metrics.apiKey}`
   ).toString('base64');
 
+  console.log('Sending metrics to Grafana', {
+    endpointUrl: config.metrics.endpointUrl,
+    source: config.metrics.source,
+    metricCount: metrics.length,
+  });
+
   const response = await fetch(config.metrics.endpointUrl, {
     method: 'POST',
     headers: {
@@ -158,8 +164,11 @@ async function sendMetricsToGrafana(metrics) {
     body: JSON.stringify(body),
   });
 
+  const text = await response.text();
+  console.log('Grafana response', response.status, text);
+
   if (!response.ok) {
-    throw new Error(`Grafana push failed: ${response.status}`);
+    throw new Error(`Grafana push failed: ${response.status} ${text}`);
   }
 }
 

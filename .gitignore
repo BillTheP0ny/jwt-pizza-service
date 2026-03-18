@@ -5,3 +5,4 @@ coverage
 dist
 coverage
 node_modules
+config.js
