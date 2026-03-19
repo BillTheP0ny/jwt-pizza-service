@@ -162,9 +162,8 @@ async function sendMetricsToGrafana(metrics) {
 
   const text = await response.text();
   console.log('Grafana response', response.status, text);
-  console.log(config.metrics.accountId)
-  console.log(config.metrics.apiKey)
-
+  console.log(config.metrics.accountId);
+  console.log(config.metrics.apiKey);
 
   if (!response.ok) {
     throw new Error(`Grafana push failed: ${response.status} ${text}`);
@@ -179,7 +178,7 @@ async function flushMetrics() {
 
     metrics.push(
       createMetric(
-        'jwt_pizza_http_requests_total',
+        'jwt_pizza_http_requests',
         count,
         '1',
         'sum',
@@ -202,7 +201,7 @@ async function flushMetrics() {
 
   metrics.push(
     createMetric(
-      'jwt_pizza_auth_attempts_total',
+      'jwt_pizza_auth_attempts',
       state.auth.success,
       '1',
       'sum',
@@ -213,7 +212,7 @@ async function flushMetrics() {
 
   metrics.push(
     createMetric(
-      'jwt_pizza_auth_attempts_total',
+      'jwt_pizza_auth_attempts',
       state.auth.failure,
       '1',
       'sum',
@@ -246,7 +245,7 @@ async function flushMetrics() {
 
   metrics.push(
     createMetric(
-      'jwt_pizza_pizzas_sold_total',
+      'jwt_pizza_pizzas_sold',
       state.pizza.sold,
       '1',
       'sum',
@@ -257,7 +256,7 @@ async function flushMetrics() {
 
   metrics.push(
     createMetric(
-      'jwt_pizza_pizza_creation_failures_total',
+      'jwt_pizza_pizza_creation_failures',
       state.pizza.failures,
       '1',
       'sum',
@@ -268,7 +267,7 @@ async function flushMetrics() {
 
   metrics.push(
     createMetric(
-      'jwt_pizza_revenue_total',
+      'jwt_pizza_revenue',
       Number(state.pizza.revenue.toFixed(4)),
       '1',
       'sum',
