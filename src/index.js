@@ -1,3 +1,6 @@
+const config = require('./config.js');
+console.log('METRICS SOURCE AT STARTUP:', config.metrics?.source);
+
 const app = require('./service.js');
 const metrics = require('./metrics.js');
 
