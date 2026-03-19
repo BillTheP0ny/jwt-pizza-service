@@ -19,56 +19,11 @@ const state = {
   },
 };
 
-let timer = null;
-let flushInProgress = false;
-
-// Use BigInt so OTLP nanosecond timestamps stay precise.
-const processStartUnixNano = (BigInt(Date.now()) * 1000000n).toString();
-
-function nowUnixNano() {
-  return (BigInt(Date.now()) * 1000000n).toString();
-}
-
-function toOtlpStringAttribute(key, value) {
-  return {
-    key,
-    value: { stringValue: String(value) },
-  };
-}
-
-function buildDataPointAttributes(attributes = {}) {
-  const source = config.metrics?.source || 'jwt-pizza-service';
-  const merged = { ...attributes, source };
-
-  return Object.entries(merged)
-    .filter(([, value]) => value !== undefined && value !== null)
-    .map(([key, value]) => toOtlpStringAttribute(key, value));
-}
-
-function buildResourceAttributes() {
-  const source = config.metrics?.source || 'jwt-pizza-service';
-  const environment = source.endsWith('-dev') ? 'development' : 'production';
-
-  return [
-    toOtlpStringAttribute('service.name', source),
-    toOtlpStringAttribute('service.namespace', 'jwt-pizza-service'),
-    toOtlpStringAttribute('service.instance.id', os.hostname()),
-    toOtlpStringAttribute('deployment.environment', environment),
-    toOtlpStringAttribute('source', source),
-  ];
-}
-
-function normalizeEndpoint(req) {
-  const base = req.baseUrl || '';
-  const routePath = req.route?.path || req.path || 'unknown';
-  return `${base}${routePath}` || 'unknown';
-}
-
 function trackRequest(req, res, next) {
   const start = Date.now();
 
   res.on('finish', () => {
-    const endpoint = normalizeEndpoint(req);
+    const endpoint = req.route?.path || req.path || 'unknown';
     const method = req.method;
     const status = String(res.statusCode);
     const key = `${method}|${endpoint}|${status}`;
@@ -132,58 +87,40 @@ function getMemoryUsagePercentage() {
 
 function average(values) {
   if (!values.length) return 0;
-  return Number(
-    (values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2)
-  );
+  return Number((values.reduce((sum, v) => sum + v, 0) / values.length).toFixed(2));
 }
 
 function createMetric(name, value, unit, metricType, valueType, attributes = {}) {
-  const dataPoint = {
-    [valueType]: value,
-    timeUnixNano: nowUnixNano(),
-    attributes: buildDataPointAttributes(attributes),
-  };
+  const source = config.metrics?.source || 'jwt-pizza-service';
+  const allAttributes = { ...attributes, source };
 
   const metric = {
     name,
     unit,
     [metricType]: {
-      dataPoints: [dataPoint],
+      dataPoints: [
+        {
+          [valueType]: value,
+          timeUnixNano: String(Date.now() * 1000000),
+          attributes: [],
+        },
+      ],
     },
   };
 
+  Object.entries(allAttributes).forEach(([key, val]) => {
+    metric[metricType].dataPoints[0].attributes.push({
+      key,
+      value: { stringValue: String(val) },
+    });
+  });
+
   if (metricType === 'sum') {
-    metric.sum.aggregationTemporality = 'AGGREGATION_TEMPORALITY_CUMULATIVE';
-    metric.sum.isMonotonic = true;
-    metric.sum.dataPoints[0].startTimeUnixNano = processStartUnixNano;
+    metric[metricType].aggregationTemporality = 'AGGREGATION_TEMPORALITY_CUMULATIVE';
+    metric[metricType].isMonotonic = true;
   }
 
   return metric;
-}
-
-function buildRequestLatencyMetrics() {
-  const grouped = {};
-
-  for (const item of state.requestLatencies) {
-    const key = `${item.method}|${item.endpoint}`;
-    if (!grouped[key]) {
-      grouped[key] = [];
-    }
-    grouped[key].push(item.duration);
-  }
-
-  return Object.entries(grouped).map(([key, durations]) => {
-    const [method, endpoint] = key.split('|');
-
-    return createMetric(
-      'jwt_pizza_http_request_latency_ms',
-      average(durations),
-      'ms',
-      'gauge',
-      'asDouble',
-      { method, endpoint }
-    );
-  });
 }
 
 async function sendMetricsToGrafana(metrics) {
@@ -196,22 +133,11 @@ async function sendMetricsToGrafana(metrics) {
     return;
   }
 
-  const auth = Buffer.from(
-    `${config.metrics.accountId}:${config.metrics.apiKey}`
-  ).toString('base64');
-
   const body = {
     resourceMetrics: [
       {
-        resource: {
-          attributes: buildResourceAttributes(),
-        },
         scopeMetrics: [
           {
-            scope: {
-              name: 'jwt-pizza-service-manual-metrics',
-              version: '1.0.0',
-            },
             metrics,
           },
         ],
@@ -228,7 +154,7 @@ async function sendMetricsToGrafana(metrics) {
   const response = await fetch(config.metrics.endpointUrl, {
     method: 'POST',
     headers: {
-      Authorization: `Basic ${auth}`,
+      Authorization: `Bearer ${config.metrics.accountId}:${config.metrics.apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -236,6 +162,9 @@ async function sendMetricsToGrafana(metrics) {
 
   const text = await response.text();
   console.log('Grafana response', response.status, text);
+  console.log(config.metrics.accountId)
+  console.log(config.metrics.apiKey)
+
 
   if (!response.ok) {
     throw new Error(`Grafana push failed: ${response.status} ${text}`);
@@ -243,157 +172,146 @@ async function sendMetricsToGrafana(metrics) {
 }
 
 async function flushMetrics() {
-  if (flushInProgress) {
-    console.log('Skipping metrics flush; previous flush still in progress');
-    return;
-  }
+  const metrics = [];
 
-  flushInProgress = true;
+  Object.entries(state.requests).forEach(([key, count]) => {
+    const [method, endpoint, status] = key.split('|');
+
+    metrics.push(
+      createMetric(
+        'jwt_pizza_http_requests_total',
+        count,
+        '1',
+        'sum',
+        'asInt',
+        { method, endpoint, status }
+      )
+    );
+  });
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_active_users',
+      state.activeUsers.size,
+      '1',
+      'gauge',
+      'asInt',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_auth_attempts_total',
+      state.auth.success,
+      '1',
+      'sum',
+      'asInt',
+      { result: 'success' }
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_auth_attempts_total',
+      state.auth.failure,
+      '1',
+      'sum',
+      'asInt',
+      { result: 'failure' }
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_cpu_usage_percent',
+      getCpuUsagePercentage(),
+      '%',
+      'gauge',
+      'asDouble',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_memory_usage_percent',
+      getMemoryUsagePercentage(),
+      '%',
+      'gauge',
+      'asDouble',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_pizzas_sold_total',
+      state.pizza.sold,
+      '1',
+      'sum',
+      'asInt',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_pizza_creation_failures_total',
+      state.pizza.failures,
+      '1',
+      'sum',
+      'asInt',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_revenue_total',
+      Number(state.pizza.revenue.toFixed(4)),
+      '1',
+      'sum',
+      'asDouble',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_http_request_latency_ms_avg',
+      average(state.requestLatencies.map((x) => x.duration)),
+      'ms',
+      'gauge',
+      'asDouble',
+      {}
+    )
+  );
+
+  metrics.push(
+    createMetric(
+      'jwt_pizza_pizza_creation_latency_ms_avg',
+      average(state.pizza.latencies),
+      'ms',
+      'gauge',
+      'asDouble',
+      {}
+    )
+  );
 
   try {
-    const metrics = [];
-
-    // HTTP requests by method/endpoint/status (monotonic counter)
-    Object.entries(state.requests).forEach(([key, count]) => {
-      const [method, endpoint, status] = key.split('|');
-
-      metrics.push(
-        createMetric(
-          'jwt_pizza_http_requests',
-          count,
-          '',
-          'sum',
-          'asInt',
-          { method, endpoint, status }
-        )
-      );
-    });
-
-    // Active users seen during the current flush window
-    metrics.push(
-      createMetric(
-        'jwt_pizza_active_users',
-        state.activeUsers.size,
-        '',
-        'gauge',
-        'asInt',
-        {}
-      )
-    );
-
-    // Auth attempts (monotonic counters)
-    metrics.push(
-      createMetric(
-        'jwt_pizza_auth_attempts',
-        state.auth.success,
-        '',
-        'sum',
-        'asInt',
-        { result: 'success' }
-      )
-    );
-
-    metrics.push(
-      createMetric(
-        'jwt_pizza_auth_attempts',
-        state.auth.failure,
-        '',
-        'sum',
-        'asInt',
-        { result: 'failure' }
-      )
-    );
-
-    // CPU and memory usage
-    metrics.push(
-      createMetric(
-        'jwt_pizza_cpu_usage_percent',
-        getCpuUsagePercentage(),
-        '%',
-        'gauge',
-        'asDouble',
-        {}
-      )
-    );
-
-    metrics.push(
-      createMetric(
-        'jwt_pizza_memory_usage_percent',
-        getMemoryUsagePercentage(),
-        '%',
-        'gauge',
-        'asDouble',
-        {}
-      )
-    );
-
-    // Pizza metrics (monotonic counters)
-    metrics.push(
-      createMetric(
-        'jwt_pizza_pizzas_sold',
-        state.pizza.sold,
-        '',
-        'sum',
-        'asInt',
-        {}
-      )
-    );
-
-    metrics.push(
-      createMetric(
-        'jwt_pizza_pizza_creation_failures',
-        state.pizza.failures,
-        '',
-        'sum',
-        'asInt',
-        {}
-      )
-    );
-
-    metrics.push(
-      createMetric(
-        'jwt_pizza_revenue',
-        Number(state.pizza.revenue.toFixed(4)),
-        '',
-        'sum',
-        'asDouble',
-        {}
-      )
-    );
-
-    // Endpoint latency averages for the current flush window
-    metrics.push(...buildRequestLatencyMetrics());
-
-    // Pizza creation latency average for the current flush window
-    metrics.push(
-      createMetric(
-        'jwt_pizza_pizza_creation_latency_ms',
-        average(state.pizza.latencies),
-        'ms',
-        'gauge',
-        'asDouble',
-        {}
-      )
-    );
-
     await sendMetricsToGrafana(metrics);
   } catch (err) {
     console.error('Error pushing metrics:', err.message);
-  } finally {
-    // Reset only windowed gauges/latencies; keep cumulative counters.
-    state.requestLatencies = [];
-    state.activeUsers = new Set();
-    state.pizza.latencies = [];
-    flushInProgress = false;
   }
+
+  state.requestLatencies = [];
+  state.activeUsers = new Set();
+  state.pizza.latencies = [];
 }
 
-function start(periodMs = 15000) {
-  if (timer) {
-    return;
-  }
-
-  timer = setInterval(flushMetrics, periodMs);
+function start(periodMs = 60000) {
+  setInterval(flushMetrics, periodMs);
 }
 
 module.exports = {
