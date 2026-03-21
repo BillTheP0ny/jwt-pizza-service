@@ -75,16 +75,18 @@ authRouter.put(
   '/',
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
-    const user = await DB.getUser(email, password);
 
-    if (!user) {
+    try {
+      const user = await DB.getUser(email, password);
+      const auth = await setAuth(user);
+
+      metrics.authAttempt(true, user.id);
+
+      res.json({ user: user, token: auth });
+    } catch {
       metrics.authAttempt(false);
-      return res.status(401).json({ message: 'unauthorized' });
+      res.status(401).json({ message: 'unauthorized' });
     }
-
-    const auth = await setAuth(user);
-    metrics.authAttempt(true, user.id);
-    res.json({ user: user, token: auth });
   })
 );
 
@@ -94,6 +96,7 @@ authRouter.delete(
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     await clearAuth(req);
+    metrics.userLoggedOut(req.user.id);
     res.json({ message: 'logout successful' });
   })
 );

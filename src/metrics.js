@@ -1,76 +1,175 @@
+const config = require('./config').metrics;
 const os = require('os');
-const config = require('./config');
 
-const state = {
-  requests: {},
-  requestLatencies: [],
-  activeUsers: new Set(),
-
-  auth: {
-    success: 0,
-    failure: 0,
+const unprocessedData = {
+  http_requests: {
+    total: 0,
+    get: 0,
+    put: 0,
+    post: 0,
+    delete: 0,
   },
 
-  pizza: {
-    sold: 0,
-    failures: 0,
-    revenue: 0,
-    latencies: [],
-  },
+  endpoint_requests: {},
+
+  endpoint_latency_windows: {},
+
+  auth_success: 0,
+  auth_failure: 0,
+
+  active_users: new Map(),
+
+  pizzas_sold: 0,
+  pizza_creation_failures: 0,
+  revenue: 0,
+  pizza_latency_window: [],
 };
 
-function trackRequest(req, res, next) {
+const requestTracker = (req, res, next) => {
   const start = Date.now();
+  let handled = false;
 
-  res.on('finish', () => {
-    const endpoint = req.route?.path || req.path || 'unknown';
-    const method = req.method;
-    const status = String(res.statusCode);
-    const key = `${method}|${endpoint}|${status}`;
-
-    state.requests[key] = (state.requests[key] || 0) + 1;
-
-    state.requestLatencies.push({
-      method,
-      endpoint,
-      status,
-      duration: Date.now() - start,
-    });
-
-    if (req.user?.id) {
-      state.activeUsers.add(String(req.user.id));
+  const handler = () => {
+    if (handled) {
+      return;
     }
-  });
+    handled = true;
 
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(req.method)) {
+      return;
+    }
+
+    const duration = Date.now() - start;
+    const cleanUrl = (req.originalUrl || req.path || 'unknown').split('?')[0];
+    const endpoint = `[${req.method}] ${cleanUrl}`;
+
+    unprocessedData.http_requests.total += 1;
+
+    switch (req.method) {
+      case 'GET':
+        unprocessedData.http_requests.get += 1;
+        break;
+      case 'PUT':
+        unprocessedData.http_requests.put += 1;
+        break;
+      case 'POST':
+        unprocessedData.http_requests.post += 1;
+        break;
+      case 'DELETE':
+        unprocessedData.http_requests.delete += 1;
+        break;
+    }
+
+    unprocessedData.endpoint_requests[endpoint] = (unprocessedData.endpoint_requests[endpoint] || 0) + 1;
+
+    if (!unprocessedData.endpoint_latency_windows[endpoint]) {
+      unprocessedData.endpoint_latency_windows[endpoint] = [];
+    }
+    unprocessedData.endpoint_latency_windows[endpoint].push(duration);
+  };
+
+  res.on('finish', handler);
+  res.on('close', handler);
   next();
-}
+};
 
 function authAttempt(success, userId = null) {
   if (success) {
-    state.auth.success += 1;
-    if (userId) {
-      state.activeUsers.add(String(userId));
+    unprocessedData.auth_success += 1;
+
+    if (userId !== null && userId !== undefined) {
+      unprocessedData.active_users.set(String(userId), Date.now());
     }
   } else {
-    state.auth.failure += 1;
+    unprocessedData.auth_failure += 1;
   }
 }
 
-function recordActiveUser(userId) {
-  if (userId) {
-    state.activeUsers.add(String(userId));
+function userLoggedOut(userId) {
+  if (userId !== null && userId !== undefined) {
+    unprocessedData.active_users.delete(String(userId));
   }
 }
 
 function pizzaPurchase(success, latencyMs, pizzaCount = 0, revenueAmount = 0) {
-  state.pizza.latencies.push(Number(latencyMs) || 0);
+  const numericLatency = Number(latencyMs);
+  if (Number.isFinite(numericLatency)) {
+    unprocessedData.pizza_latency_window.push(numericLatency);
+  }
 
   if (success) {
-    state.pizza.sold += Number(pizzaCount) || 0;
-    state.pizza.revenue += Number(revenueAmount) || 0;
+    unprocessedData.pizzas_sold += Number(pizzaCount) || 0;
+    unprocessedData.revenue += Number(revenueAmount) || 0;
   } else {
-    state.pizza.failures += 1;
+    unprocessedData.pizza_creation_failures += 1;
   }
+}
+
+class MetricBuilder {
+  constructor() {
+    this.metrics = [];
+  }
+
+  append(metricName, metricValue, type, unit, attributes = {}) {
+    const numericValue = Number(metricValue);
+    if (!Number.isFinite(numericValue)) {
+      return;
+    }
+
+    const valueField = Number.isInteger(numericValue) ? 'asInt' : 'asDouble';
+
+    const dataPoint = {
+      [valueField]: numericValue,
+      timeUnixNano: String(Date.now() * 1000000),
+      attributes: [
+        {
+          key: 'source',
+          value: { stringValue: config.source },
+        },
+      ],
+    };
+
+    Object.entries(attributes).forEach(([key, value]) => {
+      dataPoint.attributes.push({
+        key,
+        value: { stringValue: String(value) },
+      });
+    });
+
+    this.metrics.push({
+      name: metricName,
+      unit,
+      [type]: {
+        dataPoints: [dataPoint],
+        ...(type === 'sum' && {
+          aggregationTemporality: 'AGGREGATION_TEMPORALITY_CUMULATIVE',
+          isMonotonic: true,
+        }),
+      },
+    });
+  }
+
+  toString() {
+    return JSON.stringify({
+      resourceMetrics: [
+        {
+          scopeMetrics: [
+            {
+              metrics: this.metrics,
+            },
+          ],
+        },
+      ],
+    });
+  }
+}
+
+function average(values) {
+  if (!values.length) {
+    return 0;
+  }
+
+  return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
 }
 
 function getCpuUsagePercentage() {
@@ -85,238 +184,99 @@ function getMemoryUsagePercentage() {
   return Number(((usedMemory / totalMemory) * 100).toFixed(2));
 }
 
-function average(values) {
-  if (!values.length) return 0;
-  return Number((values.reduce((sum, v) => sum + v, 0) / values.length).toFixed(2));
-}
-
-function createMetric(name, value, unit, metricType, valueType, attributes = {}) {
-  const source = config.metrics?.source || 'jwt-pizza-service';
-  const allAttributes = { ...attributes, source };
-
-  const metric = {
-    name,
-    unit,
-    [metricType]: {
-      dataPoints: [
-        {
-          [valueType]: value,
-          timeUnixNano: String(Date.now() * 1000000),
-          attributes: [],
-        },
-      ],
-    },
-  };
-
-  Object.entries(allAttributes).forEach(([key, val]) => {
-    metric[metricType].dataPoints[0].attributes.push({
-      key,
-      value: { stringValue: String(val) },
-    });
-  });
-
-  if (metricType === 'sum') {
-    metric[metricType].aggregationTemporality = 'AGGREGATION_TEMPORALITY_CUMULATIVE';
-    metric[metricType].isMonotonic = true;
-  }
-
-  return metric;
-}
-
-async function sendMetricsToGrafana(metrics) {
-  if (
-    !config.metrics?.endpointUrl ||
-    !config.metrics?.accountId ||
-    !config.metrics?.apiKey
-  ) {
-    console.log('Metrics config missing; skipping Grafana push');
+async function sendMetricToGrafana(body) {
+  if (!config.endpointUrl || !config.accountId || !config.apiKey) {
+    console.error('Missing Grafana metrics config');
     return;
   }
 
-  const body = {
-    resourceMetrics: [
-      {
-        scopeMetrics: [
-          {
-            metrics,
-          },
-        ],
-      },
-    ],
-  };
-
-  console.log('Sending metrics to Grafana', {
-    endpointUrl: config.metrics.endpointUrl,
-    source: config.metrics.source,
-    metricCount: metrics.length,
-  });
-
-  const response = await fetch(config.metrics.endpointUrl, {
+  const response = await fetch(config.endpointUrl, {
     method: 'POST',
+    body,
     headers: {
-      Authorization: `Bearer ${config.metrics.accountId}:${config.metrics.apiKey}`,
+      Authorization: `Bearer ${config.accountId}:${config.apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
   });
-
-  const text = await response.text();
-  console.log('Grafana response', response.status, text);
-  console.log(config.metrics.accountId);
-  console.log(config.metrics.apiKey);
 
   if (!response.ok) {
-    throw new Error(`Grafana push failed: ${response.status} ${text}`);
+    const text = await response.text();
+    console.error(`Failed to push metrics data to Grafana: ${text}`);
+    console.error(body);
   }
 }
 
-async function flushMetrics() {
-  const metrics = [];
+function zeroOutWindows() {
+  unprocessedData.endpoint_latency_windows = {};
+  unprocessedData.pizza_latency_window = [];
+}
 
-  Object.entries(state.requests).forEach(([key, count]) => {
-    const [method, endpoint, status] = key.split('|');
+function httpMetrics(builder) {
+  builder.append('http_requests', unprocessedData.http_requests.total, 'sum', '1', { method: 'TOTAL' });
+  builder.append('http_requests', unprocessedData.http_requests.get, 'sum', '1', { method: 'GET' });
+  builder.append('http_requests', unprocessedData.http_requests.put, 'sum', '1', { method: 'PUT' });
+  builder.append('http_requests', unprocessedData.http_requests.post, 'sum', '1', { method: 'POST' });
+  builder.append('http_requests', unprocessedData.http_requests.delete, 'sum', '1', { method: 'DELETE' });
 
-    metrics.push(
-      createMetric(
-        'jwt_pizza_http_requests',
-        count,
-        '1',
-        'sum',
-        'asInt',
-        { method, endpoint, status }
-      )
-    );
+  Object.entries(unprocessedData.endpoint_requests).forEach(([endpoint, count]) => {
+    builder.append('endpoint_requests', count, 'sum', '1', { endpoint });
   });
 
-  metrics.push(
-    createMetric(
-      'jwt_pizza_active_users',
-      state.activeUsers.size,
-      '1',
-      'gauge',
-      'asInt',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_auth_attempts',
-      state.auth.success,
-      '1',
-      'sum',
-      'asInt',
-      { result: 'success' }
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_auth_attempts',
-      state.auth.failure,
-      '1',
-      'sum',
-      'asInt',
-      { result: 'failure' }
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_cpu_usage_percent',
-      getCpuUsagePercentage(),
-      '%',
-      'gauge',
-      'asDouble',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_memory_usage_percent',
-      getMemoryUsagePercentage(),
-      '%',
-      'gauge',
-      'asDouble',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_pizzas_sold',
-      state.pizza.sold,
-      '1',
-      'sum',
-      'asInt',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_pizza_creation_failures',
-      state.pizza.failures,
-      '1',
-      'sum',
-      'asInt',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_revenue',
-      Number(state.pizza.revenue.toFixed(4)),
-      '1',
-      'sum',
-      'asDouble',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_http_request_latency_ms_avg',
-      average(state.requestLatencies.map((x) => x.duration)),
-      'ms',
-      'gauge',
-      'asDouble',
-      {}
-    )
-  );
-
-  metrics.push(
-    createMetric(
-      'jwt_pizza_pizza_creation_latency_ms_avg',
-      average(state.pizza.latencies),
-      'ms',
-      'gauge',
-      'asDouble',
-      {}
-    )
-  );
-
-  try {
-    await sendMetricsToGrafana(metrics);
-  } catch (err) {
-    console.error('Error pushing metrics:', err.message);
-  }
-
-  state.requestLatencies = [];
-  state.activeUsers = new Set();
-  state.pizza.latencies = [];
+  Object.entries(unprocessedData.endpoint_latency_windows).forEach(([endpoint, values]) => {
+    builder.append('service_endpoint_latency', average(values), 'gauge', 'ms', { endpoint });
+  });
 }
 
-function start(periodMs = 60000) {
-  setInterval(flushMetrics, periodMs);
+function systemMetrics(builder) {
+  builder.append('cpu_usage', getCpuUsagePercentage(), 'gauge', '%');
+  builder.append('memory_usage', getMemoryUsagePercentage(), 'gauge', '%');
+}
+
+function userMetrics(builder) {
+  builder.append('active_users', unprocessedData.active_users.size, 'gauge', '1');
+}
+
+function purchaseMetrics(builder) {
+  builder.append('pizzas_sold', unprocessedData.pizzas_sold, 'sum', '1');
+  builder.append('pizza_creation_failures', unprocessedData.pizza_creation_failures, 'sum', '1');
+  builder.append('revenue', Number(unprocessedData.revenue.toFixed(4)), 'sum', '1');
+  builder.append('pizza_creation_latency', average(unprocessedData.pizza_latency_window), 'gauge', 'ms');
+}
+
+function authMetrics(builder) {
+  builder.append('auth_attempts', unprocessedData.auth_success, 'sum', '1', { result: 'success' });
+  builder.append('auth_attempts', unprocessedData.auth_failure, 'sum', '1', { result: 'failure' });
+}
+
+function sendMetricsPeriodically(period) {
+  return setInterval(async () => {
+    try {
+      const buf = new MetricBuilder();
+
+      httpMetrics(buf);
+      systemMetrics(buf);
+      userMetrics(buf);
+      purchaseMetrics(buf);
+      authMetrics(buf);
+
+      const metrics = buf.toString();
+      await sendMetricToGrafana(metrics);
+
+      zeroOutWindows();
+    } catch (error) {
+      console.log('Error sending metrics', error);
+    }
+  }, period);
+}
+
+function start(period = 60000) {
+  return sendMetricsPeriodically(period);
 }
 
 module.exports = {
-  requestTracker: trackRequest,
+  requestTracker,
   authAttempt,
-  recordActiveUser,
+  userLoggedOut,
   pizzaPurchase,
   start,
 };
