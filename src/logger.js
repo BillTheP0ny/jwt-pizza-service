@@ -12,8 +12,8 @@ class Logger {
           path: req.originalUrl,
           method: req.method,
           statusCode: res.statusCode,
-          reqBody: JSON.stringify(req.body ?? null),
-          resBody: JSON.stringify(this.tryParseBody(resBody)),
+          reqBody: req.body ?? null,
+          resBody: this.tryParseBody(resBody),
         };
 
         const level = this.statusToLogLevel(res.statusCode);
