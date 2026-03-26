@@ -8,6 +8,7 @@ class Logger {
       try {
         const logData = {
           authorized: !!req.headers.authorization,
+          ip: req.ip,
           path: req.originalUrl,
           method: req.method,
           statusCode: res.statusCode,
