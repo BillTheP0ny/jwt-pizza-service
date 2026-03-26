@@ -12,8 +12,8 @@ class Logger {
           path: req.originalUrl,
           method: req.method,
           statusCode: res.statusCode,
-          reqBody: req.body ?? null,
-          resBody: this.tryParseBody(resBody),
+          reqBody: this.safeStringify(req.body ?? null),
+          resBody: this.safeStringify(this.tryParseBody(resBody)),
         };
 
         const level = this.statusToLogLevel(res.statusCode);
@@ -57,14 +57,14 @@ class Logger {
 
   factoryRequest(body) {
     this.log('info', 'factory-request', {
-      body,
+      body: this.safeStringify(body),
     });
   }
 
   factoryResponse(statusCode, body) {
     this.log(this.statusToLogLevel(statusCode), 'factory-response', {
       statusCode,
-      body,
+      body: this.safeStringify(body),
     });
   }
 
@@ -112,6 +112,16 @@ class Logger {
       .replace(/"authorization"\s*:\s*"[^"]*"/gi, '"authorization":"*****"');
   }
 
+  safeStringify(value) {
+  if (value === undefined) return 'null';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
   async sendLogToGrafana(event) {
     if (
       !config?.endpointUrl ||
@@ -144,5 +154,6 @@ class Logger {
     }
   }
 }
+
 
 module.exports = new Logger();
