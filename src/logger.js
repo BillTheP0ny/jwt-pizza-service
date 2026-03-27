@@ -12,8 +12,8 @@ class Logger {
           path: req.originalUrl,
           method: req.method,
           statusCode: res.statusCode,
-          reqBody: this.safeStringify(req.body ?? null),
-          resBody: this.safeStringify(this.tryParseBody(resBody)),
+          reqBody: this.sanitizeField(req.body ?? null),
+          resBody: this.sanitizeField(this.tryParseBody(resBody)),
         };
 
         const level = this.statusToLogLevel(res.statusCode);
@@ -35,7 +35,7 @@ class Logger {
       type,
     };
 
-    const values = [[this.nowString(), this.sanitize(logData)]];
+    const values = [[this.nowString(), this.safeStringify(this.maskSensitive(logData))]];
     const logEvent = {
       streams: [
         {
@@ -51,20 +51,20 @@ class Logger {
   db(query, params = null) {
     this.log('info', 'db', {
       query,
-      params,
+      params: this.sanitizeField(params),
     });
   }
 
   factoryRequest(body) {
     this.log('info', 'factory-request', {
-      body: this.safeStringify(body),
+      reqBody: this.sanitizeField(body),
     });
   }
 
   factoryResponse(statusCode, body) {
     this.log(this.statusToLogLevel(statusCode), 'factory-response', {
       statusCode,
-      body: this.safeStringify(body),
+      resBody: this.sanitizeField(body),
     });
   }
 
@@ -75,7 +75,7 @@ class Logger {
       path: req?.originalUrl || null,
       method: req?.method || null,
       authorized: !!req?.headers?.authorization,
-      reqBody: req?.body || null,
+      reqBody: this.sanitizeField(req?.body ?? null),
     });
   }
 
@@ -90,8 +90,7 @@ class Logger {
   }
 
   tryParseBody(body) {
-    if (body === undefined) return null;
-    if (body === null) return null;
+    if (body === undefined || body === null) return null;
     if (typeof body === 'string') {
       try {
         return JSON.parse(body);
@@ -102,25 +101,57 @@ class Logger {
     return body;
   }
 
-  sanitize(logData) {
-    const text = JSON.stringify(logData);
-
-    return text
-      .replace(/"password"\s*:\s*"[^"]*"/gi, '"password":"*****"')
-      .replace(/"token"\s*:\s*"[^"]*"/gi, '"token":"*****"')
-      .replace(/"apiKey"\s*:\s*"[^"]*"/gi, '"apiKey":"*****"')
-      .replace(/"authorization"\s*:\s*"[^"]*"/gi, '"authorization":"*****"');
-  }
-
   safeStringify(value) {
-  if (value === undefined) return 'null';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
+    if (value === undefined) return 'null';
+    if (typeof value === 'string') return value;
+
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
   }
-}
+
+  sanitizeField(value) {
+    return this.safeStringify(this.maskSensitive(value));
+  }
+
+  maskSensitive(value) {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.maskSensitive(item));
+    }
+
+    if (value && typeof value === 'object') {
+      const cleaned = {};
+
+      for (const [key, val] of Object.entries(value)) {
+        if (this.isSensitiveKey(key)) {
+          cleaned[key] = '*****';
+        } else {
+          cleaned[key] = this.maskSensitive(val);
+        }
+      }
+
+      return cleaned;
+    }
+
+    return value;
+  }
+
+  isSensitiveKey(key) {
+    const normalized = String(key).toLowerCase();
+    return [
+      'password',
+      'token',
+      'jwt',
+      'apikey',
+      'api_key',
+      'authorization',
+      'session',
+      'sessionkey',
+      'session_key',
+    ].includes(normalized);
+  }
 
   async sendLogToGrafana(event) {
     if (
@@ -154,6 +185,5 @@ class Logger {
     }
   }
 }
-
 
 module.exports = new Logger();
