@@ -175,7 +175,7 @@ class Logger {
           Authorization: `Bearer ${config.accountId}:${config.apiKey}`,
         },
       });
-
+//dedededede
       if (!res.ok) {
         const text = await res.text();
         console.log('Failed to send log to Grafana', res.status, text);
